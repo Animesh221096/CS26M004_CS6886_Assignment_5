@@ -16,113 +16,87 @@
 #include <omp.h>
 #endif
 
+#define TI 64 /* rows of Q / S held in the i-block */
+#define TJ 64 /* rows of K / V held in the j-block */
+
 /* ------------------------------------------------------------------------- */
 /* attention(): write your implementation here.                               */
 /* ------------------------------------------------------------------------- */
 void attention(const float *Q, const float *K, const float *V, float *O, int N, int d)
 {
-    // (void)Q; (void)K; (void)V; (void)O; (void)N; (void)d;
-    // printf("attn_tiled: not implemented yet\n");
-    // exit(0); /* no output file is written, so `make check` skips this variant */
-
     const float scale = 1.0f / sqrtf((float)d);
-
-    /* Tile sizes: tune these based on your cache size */
-    const int Br = 64;   /* block rows of attention matrix */
-    const int Bc = 64;   /* block cols of attention matrix */
-    const int Br_v = 64; /* register tile for V dimension */
-
-    float *S = malloc((size_t)Br * Bc * sizeof(float));
-    float *l = malloc((size_t)Br * sizeof(float)); /* row max */
-    float *m = malloc((size_t)Br * sizeof(float)); /* row sum for softmax */
-
-    /* Process attention in row blocks */
-    for (int i_start = 0; i_start < N; i_start += Br)
+    float *S = malloc((size_t)N * N * sizeof(float));
+    if (!S)
     {
-        int i_end = (i_start + Br < N) ? i_start + Br : N;
-        int Br_actual = i_end - i_start;
+        perror("malloc S");
+        exit(1);
+    }
 
-        /* Initialize accumulators for this row block */
-        for (int i = 0; i < Br_actual; i++)
+    /* 1. S = Q K^T * scale, blocked over rows of Q (TI) and rows of K (TJ) */
+    for (int ii = 0; ii < N; ii += TI)
+    {
+        int ie = ii + TI < N ? ii + TI : N;
+        for (int jj = 0; jj < N; jj += TJ)
         {
-            l[i] = -1e9f; /* row max for softmax stability */
-            m[i] = 0.0f;  /* row sum for normalization */
-        }
-
-        float *O_block = O + (size_t)i_start * d;
-        memset(O_block, 0, (size_t)Br_actual * d * sizeof(float));
-
-        /* Column-wise blocking: process attention matrix in column blocks */
-        for (int j_start = 0; j_start < N; j_start += Bc)
-        {
-            int j_end = (j_start + Bc < N) ? j_start + Bc : N;
-            int Bc_actual = j_end - j_start;
-
-            /* Step 1: Compute S = Q[i_start:i_end] @ K[j_start:j_end]^T * scale */
-            for (int i = i_start; i < i_end; i++)
+            int je = jj + TJ < N ? jj + TJ : N;
+            for (int i = ii; i < ie; i++)
             {
-                for (int j = j_start; j < j_end; j++)
+                const float *Qi = Q + (size_t)i * d;
+                float *Si = S + (size_t)i * N;
+                for (int j = jj; j < je; j++)
                 {
+                    const float *Kj = K + (size_t)j * d;
                     float acc = 0.0f;
                     for (int k = 0; k < d; k++)
-                    {
-                        acc += Q[(size_t)i * d + k] * K[(size_t)j * d + k];
-                    }
-                    S[(size_t)(i - i_start) * Bc + (j - j_start)] = acc * scale;
-                }
-            }
-
-            /* Step 2: Online softmax (Welford-style) for numerical stability */
-            for (int i = 0; i < Br_actual; i++)
-            {
-                float *row = S + (size_t)i * Bc;
-                for (int j = 0; j < Bc_actual; j++)
-                {
-                    float val = row[j];
-                    if (val > l[i])
-                    {
-                        /* Update with new max */
-                        float diff = l[i] - val;
-                        m[i] = m[i] * expf(diff) + expf(0.0f);
-                        l[i] = val;
-                    }
-                    else
-                    {
-                        m[i] += expf(val - l[i]);
-                    }
-                    row[j] = val; /* keep for V multiply */
+                        acc += Qi[k] * Kj[k];
+                    Si[j] = acc * scale;
                 }
             }
         }
+    }
 
-        /* Step 3: Apply normalized softmax and multiply by V */
-        for (int i_rel = 0; i_rel < Br_actual; i_rel++)
+    /* 2. softmax of each row (identical to naive) */
+    for (int i = 0; i < N; i++)
+    {
+        float *row = S + (size_t)i * N;
+        float max = row[0];
+        for (int j = 1; j < N; j++)
+            if (row[j] > max)
+                max = row[j];
+        float sum = 0.0f;
+        for (int j = 0; j < N; j++)
         {
-            int i = i_start + i_rel;
-            for (int k = 0; k < d; k++)
-            {
-                float acc = 0.0f;
-                for (int j_start = 0; j_start < N; j_start += Bc)
-                {
-                    int j_end = (j_start + Bc < N) ? j_start + Bc : N;
-                    int Bc_actual = j_end - j_start;
+            row[j] = expf(row[j] - max);
+            sum += row[j];
+        }
+        for (int j = 0; j < N; j++)
+            row[j] = row[j] / sum;
+    }
 
-                    float *row = S + (size_t)i_rel * Bc;
-                    for (int j = j_start; j < j_end; j++)
-                    {
-                        /* Softmax weight: exp(S[i,j] - max) / sum */
-                        float weight = expf(S[(size_t)i_rel * Bc + (j - j_start)] - l[i_rel]) / m[i_rel];
-                        acc += weight * V[(size_t)j * d + k];
-                    }
+    /* 3. O = S V, blocked over rows of S (TI) and rows of V (TJ) */
+    memset(O, 0, (size_t)N * d * sizeof(float)); /* <- the missing line */
+    for (int ii = 0; ii < N; ii += TI)
+    {
+        int ie = ii + TI < N ? ii + TI : N;
+        for (int jj = 0; jj < N; jj += TJ)
+        {
+            int je = jj + TJ < N ? jj + TJ : N;
+            for (int i = ii; i < ie; i++)
+            {
+                const float *Si = S + (size_t)i * N;
+                float *Oi = O + (size_t)i * d;
+                for (int j = jj; j < je; j++)
+                {
+                    float s = Si[j];
+                    const float *Vj = V + (size_t)j * d;
+                    for (int k = 0; k < d; k++)
+                        Oi[k] += s * Vj[k]; /* now safe: O starts at 0 */
                 }
-                O[(size_t)i * d + k] = acc;
             }
         }
     }
 
     free(S);
-    free(l);
-    free(m);
 }
 
 /* ------------------------------------------------------------------------- */
