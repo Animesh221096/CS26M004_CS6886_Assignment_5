@@ -1,30 +1,28 @@
 # Machine specification (Q1). Fill in every field; give units. Fill in N/A if not applicable.
 
-CPU model                       :
-Microarchitecture               :
-Physical cores                  :
-Logical cores (hardware threads):
-Performance / efficiency cores  :
-Base clock (GHz)                :
-Max single-core clock (GHz)     :
-All-core clock under load (GHz) :
-SIMD instruction set and width  :
-FMA units per core              :
-Vector registers per core       :
-L1 data cache (per core)        :
-L2 cache (size, shared by)      :
-L3 cache (size, shared by)      :
-Cache line size (bytes)         :
-RAM size (GB)                   :
-RAM type, speed (MT/s), channels:
-Operating system                :
-Compiler and version            :
+CPU model                       : Intel Core i5-10200H @ 2.40 GHz
+Microarchitecture               : Comet Lake-H (10th Gen, Skylake-derived)
+Physical cores                  : 4
+Logical cores (hardware threads): 8
+Performance / efficiency cores  : 4 performance / 0 efficiency (hybrid design starts with 12th Gen)
+Base clock (GHz)                : 2.40
+Max single-core clock (GHz)     : 4.10
+All-core clock under load (GHz) : ~4.05 (measured 4.03-4.09 GHz on all 8 threads via lscpu --extended under load)
+SIMD instruction set and width  : AVX2 + FMA, 256-bit (8 fp32 lanes/vector register)
+FMA units per core              : 2 (execution ports 0 and 5)
+Vector registers per core       : 16 (YMM0-YMM15, 256-bit each)
+L1 data cache (per core)        : 32 KiB, 8-way (128 KiB total)
+L2 cache (size, shared by)      : 256 KiB per core, private to each core (1 MiB total)
+L3 cache (size, shared by)      : 8 MiB, shared by all 4 cores (16-way)
+Cache line size (bytes)         : 64
+RAM size (GB)                   : 16 (2 × 8 GiB SODIMM)
+RAM type, speed (MT/s), channels: DDR4-3200 SODIMMs (Micron 4ATF1G64HZ-3G2E2), configured at 2933 MT/s by firmware, 2 channels, dual rank
+Operating system                : Ubuntu Linux x86_64 (kernel 6.x)
+Compiler and version            : clang [FILL IN VERSION — run: clang --version], -O3 -march=native
 
 # Derived (show the calculation in report.pdf)
-Peak FP32 GFLOP/s, one core     :
-Peak FP32 GFLOP/s, all cores    :
-Memory bandwidth (GB/s)         :
-Ridge point, one core (FLOP/B)  :
-Ridge point, all cores (FLOP/B) :
-
-
+Peak FP32 GFLOP/s, one core     : 129.6  (8 lanes × 2 FMA × 2 flops/FMA × 4.05 GHz)
+Peak FP32 GFLOP/s, all cores    : 518.4  (4 × 129.6)
+Memory bandwidth (GB/s)         : 46.9   (2 ch × 8 B × 2933 MT/s — configured speed, not rated speed)
+Ridge point, one core (FLOP/B)  : 2.8    (129.6 / 46.9)
+Ridge point, all cores (FLOP/B) : 11.1   (518.4 / 46.9)
