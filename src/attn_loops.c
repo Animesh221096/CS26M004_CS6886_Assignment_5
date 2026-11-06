@@ -21,11 +21,86 @@
 /* ------------------------------------------------------------------------- */
 void attention(const float *Q, const float *K, const float *V, float *O, int N, int d)
 {
-    (void)Q; (void)K; (void)V; (void)O; (void)N; (void)d;
-    printf("attn_loops: not implemented yet\n");
-    exit(0); /* no output file is written, so `make check` skips this variant */
-}
+    const float scale = 1.0f / sqrtf((float)d);
+    float *S = malloc((size_t)N * N * sizeof(float));
+    if (!S)
+    {
+        perror("malloc S");
+        exit(1);
+    }
 
+    /* 1. S = Q K^T * scale
+     * Reordered from i-j-k to i-k-j so that:
+     * - Q[i*d + k] is invariant in the j-loop (can be loaded once per k)
+     * - K[j*d + k] is contiguous stride-1 access
+     * - S[i*N + j] is contiguous stride-1 accumulation
+     * This pattern enables compiler auto-vectorisation. */
+
+    /* Initialise S to zero */
+    memset(S, 0, (size_t)N * N * sizeof(float));
+
+    /* i-k-j order: for each row i and dim k, add contribution to all j */
+    for (int i = 0; i < N; i++)
+    {
+        for (int k = 0; k < d; k++)
+        {
+            float qi_k = Q[(size_t)i * d + k];
+            for (int j = 0; j < N; j++)
+            {
+                S[(size_t)i * N + j] += qi_k * K[(size_t)j * d + k];
+            }
+        }
+    }
+
+    /* Apply scale */
+    for (int i = 0; i < N; i++)
+    {
+        for (int j = 0; j < N; j++)
+        {
+            S[(size_t)i * N + j] *= scale;
+        }
+    }
+
+    /* 2. softmax of each row (unchanged from naive - row-wise ops are hard to parallelise) */
+    for (int i = 0; i < N; i++)
+    {
+        float *row = S + (size_t)i * N;
+        float max = row[0];
+        for (int j = 1; j < N; j++)
+            if (row[j] > max)
+                max = row[j];
+        float sum = 0.0f;
+        for (int j = 0; j < N; j++)
+        {
+            row[j] = expf(row[j] - max);
+            sum += row[j];
+        }
+        for (int j = 0; j < N; j++)
+            row[j] = row[j] / sum;
+    }
+
+    /* 3. O = S V
+     * Reordered from i-k-j to i-j-k so that:
+     * - S[i*N + j] is invariant in the k-loop
+     * - V[j*d + k] is contiguous stride-1 access
+     * - O[i*d + k] is contiguous stride-1 accumulation
+     * This enables compiler auto-vectorisation. */
+
+    memset(O, 0, (size_t)N * d * sizeof(float));
+    for (int i = 0; i < N; i++)
+    {
+        for (int j = 0; j < N; j++)
+        {
+            float s_ij = S[(size_t)i * N + j];
+            for (int k = 0; k < d; k++)
+            {
+                O[(size_t)i * d + k] += s_ij * V[(size_t)j * d + k];
+            }
+        }
+    }
+
+    free(S);
+}
 /* ------------------------------------------------------------------------- */
 /* Driver: do not change below this line.                                     */
 /* ------------------------------------------------------------------------- */
@@ -46,17 +121,20 @@ static int cmp_double(const void *a, const void *b)
 
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
+    if (argc != 3)
+    {
         fprintf(stderr, "usage: %s <input.bin> <output.bin>\n", argv[0]);
         return 1;
     }
     FILE *in = fopen(argv[1], "rb");
-    if (!in) {
+    if (!in)
+    {
         perror(argv[1]);
         return 1;
     }
     int32_t hdr[2];
-    if (fread(hdr, sizeof hdr, 1, in) != 1) {
+    if (fread(hdr, sizeof hdr, 1, in) != 1)
+    {
         fprintf(stderr, "%s: bad header\n", argv[1]);
         return 1;
     }
@@ -65,7 +143,8 @@ int main(int argc, char **argv)
     float *Q = malloc(n * sizeof(float)), *K = malloc(n * sizeof(float));
     float *V = malloc(n * sizeof(float)), *O = malloc(n * sizeof(float));
     if (!Q || !K || !V || !O || fread(Q, sizeof(float), n, in) != n ||
-        fread(K, sizeof(float), n, in) != n || fread(V, sizeof(float), n, in) != n) {
+        fread(K, sizeof(float), n, in) != n || fread(V, sizeof(float), n, in) != n)
+    {
         fprintf(stderr, "%s: could not read Q, K, V\n", argv[1]);
         return 1;
     }
@@ -73,7 +152,8 @@ int main(int argc, char **argv)
 
     attention(Q, K, V, O, N, d); /* warm-up, not timed */
     double t[REPS];
-    for (int r = 0; r < REPS; r++) {
+    for (int r = 0; r < REPS; r++)
+    {
         double t0 = now();
         attention(Q, K, V, O, N, d);
         t[r] = now() - t0;
@@ -90,7 +170,8 @@ int main(int argc, char **argv)
            threads, median * 1e3, 4.0 * N * (double)N * d / median * 1e-9);
 
     FILE *out = fopen(argv[2], "wb");
-    if (!out || fwrite(hdr, sizeof hdr, 1, out) != 1 || fwrite(O, sizeof(float), n, out) != n) {
+    if (!out || fwrite(hdr, sizeof hdr, 1, out) != 1 || fwrite(O, sizeof(float), n, out) != n)
+    {
         perror(argv[2]);
         return 1;
     }
